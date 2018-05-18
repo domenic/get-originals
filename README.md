@@ -59,7 +59,7 @@ function storeIt(value) {
 TODO flesh out
 
 - `getOriginalGlobal("globalProperty")`
-- `callOriginalMethod(obj, "methodName", ...args)`
+- `callOriginalMethod(obj, "methodName", ...args)` (but see below)
 - `getOriginalProperty(obj, "propertyName")`
 - `setOriginalProperty(obj, "propertyName", newValue)`
 
@@ -71,9 +71,40 @@ Talk about what `"globalProperty"`, `"methodName"`, and `"propertyName"` values 
 
 Talk about implementation strategies (unwrapping Web IDL objects... harder for JS objects)
 
-Talk about `...args` vs. `args` array choice (avoids using patchable global `Array.prototype`).
-
 Is the name "original" right? For example some properties might change their _values_ over time, so we're not getting the original _values_; maybe the word is misleading?
+
+### Do we need `callOriginalMethod()`?
+
+We could eliminate `callOriginalMethod()` in favor of making people use (the original version of) `Reflect.call`, e.g. instead of
+
+```js
+const request = callOriginalMethod(indexedDB, "open", "my-db", 1);
+```
+
+you would do
+
+```js
+const Reflect = getOriginalGlobal("Reflect");
+const Reflect_call = getOriginalProperty(Reflect, "call");
+
+const request = Reflect_call(indexedDB, "open", ["my-db", 1]);
+```
+
+Actually you would need to do more than that, because array literals are not safe:
+
+```js
+const Object = getOriginalGlobal("Object");
+const Object_setPrototypeOf = getOriginalProperty(Object, "setPrototypeOf");
+
+const safeArray(arr) {
+  Object_setPrototypeOf(arr, null);
+  return arr;
+}
+
+const request = Reflect_call(indexedDB, safeArray(["open", 1]));
+```
+
+This is kind of terrible though, so it'd be nice to give people `callOriginalMethod()`. Specifically, we designed `callOriginalMethod()` to take the method arguments as positional parameters, instead of an array, to avoid the extra hassle there.
 
 ## Automatic rewriting/enforcement of robustness
 
