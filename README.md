@@ -70,9 +70,10 @@ All of these are non-writable and non-configurable (i.e. unforgeable), and avail
 [Exposed=(Window,Worker,Worklet)]
 interface mixin GetOriginals {
   [Unforgeable] readonly attribute object originalSelf;
-  [Unforgeable] any getOriginalGlobal(DOMString name);
+  [Unforgeable] Function getOriginalConstructor(DOMString name);
   [Unforgeable] any getOriginalProperty(any target, DOMString propertyName);
   [Unforgeable] void setOriginalProperty(any target, DOMString propertyName, any newValue);
+  [Unforgeable] any callOriginalStaticMethod(DOMString global, DOMString methodName, any... args);
   [Unforgeable] any callOriginalMethod(any target, DOMString methodName, any... args);
 }
 
@@ -93,14 +94,47 @@ This is simply an unforgeable version of the global `self` property. In Window c
 
 It is mainly used in conjunction with `getOriginalProperty()` to access important objects stored as global properties, e.g. `document` via `getOriginalProperty(originalSelf, "document")`.
 
-### `getOriginalGlobal()`
+### `getOriginalConstructor()`
 
-Roughly speaking, the name argument is meant to be a class or namespace name. Concretely, we would allow:
+The supplied constructor name would be one of:
 
-* All Web IDL interface and namespace names that are [exposed](https://heycam.github.io/webidl/#dfn-exposed) in the current realm;
+* All Web IDL interface names that are [exposed](https://heycam.github.io/webidl/#dfn-exposed) in the current realm;
 * The [constructor properties of the global object](https://tc39.github.io/ecma262/#sec-constructor-properties-of-the-global-object) listed in the JavaScript specification;
-* The [other properties of the global object](https://tc39.github.io/ecma262/#sec-other-properties-of-the-global-object) listed in the JavaScript specification;
 * The [global properties](https://streams.spec.whatwg.org/#globals) listed in the Streams Standard.
+
+Examples:
+
+```js
+// These work:
+const OArray = getOriginalConstructor("Array");
+const OText = getOriginalConstructor("Text");
+const OReadableStream = getOriginalConstructor("ReadableStream");
+
+// These do not work:
+getOriginalConstructor("JSON");
+getOriginalConstructor("CSS");
+getOriginalConstructor("ReadableStreamReader");
+getOriginalConstructor("%IteratorPrototype%");
+```
+
+### `callOriginalStaticMethod()`
+
+The supplied global name would be one of:
+
+* All Web IDL namespace names that are [exposed](https://heycam.github.io/webidl/#dfn-exposed) in the current realm;
+* The [other properties of the global object](https://tc39.github.io/ecma262/#sec-other-properties-of-the-global-object) listed in the JavaScript specification, viz. `Atomics`, `JSON`, `Math`, and `Reflect`.
+
+The supplied method name would be one of:
+
+* The regular operations exposed on that Web IDL namespace;
+* The function properties defined on `Atomics`, `JSON`, `Math`, and `Reflect`.
+
+Examples:
+
+```js
+// These work:
+const isAnArray = callOriginalStaticMethod("Array", "isArray");
+```
 
 ### `getOriginalProperty()`/`setOriginalProperty()`
 
