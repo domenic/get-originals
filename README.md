@@ -186,6 +186,38 @@ Another issue is with regard to the existing lack of interoperability around var
 
 You can imagine various workarounds. For example, maintaining a separate "original prototype chain" which you can do lookups on, so that even in that hypothetical future, `"Array.prototype.slice"` can be treated the same way as `"IndexedCollection.prototype.slice"`. But this seems like a lot of work, for very little gain. Especially since the instance-based approach works so nicely, at least for Web IDL-backed objects.
 
+### Same values?
+
+One important question is whether the "originals" returned by these methods have the same _object identity_ as the originals, or just the same behavior. That is, assuming the web developer has not modified any built-ins, are the following true?
+
+```js
+getOriginalGlobal("Promise") === Promise;
+getOriginalProperty(Promise, "resolve") === Promise.resolve;
+```
+
+If this is not required, an implementation would be able to generate new JS "wrappers" for a given global/property/function on the fly, which could reduce the need to save all the originals in memory.
+
+At least for `getOriginalGlobal()`, we think it's required to preserve identity. The reason is the following:
+
+```js
+// Library code:
+const o_Promise = getOriginalGlobal("Promise");
+const o_setTimeout = getOriginalGlobal("setTimeout");
+
+function delay(ms) {
+  return new o_Promise(resolve => o_setTimeout(resolve, ms));
+}
+```
+
+```js
+// Consumer code:
+console.assert(delay(500) instanceof Promise);
+```
+
+That is, if `getOriginalGlobal("Promise")` did not have the same identity as the existing global `Promise`, consumers would be able to easily observe the difference, in a way that would be undesireable. This example generalizes to any constructor.
+
+It's less clear how important identity preservation is for `getOriginalProperty()`. As long as `getOriginalProperty(Promise, "resolve")` behaves the same as `Promise.resolve`—including returning instances of the global `Promise` constructor—then we don't really care if it is exactly the same function. But, it would probably be pretty confusing for developers to allow such divergence?
+
 ### Do we need...?
 
 The current API is somewhat of a mid-point between minimizing the number of methods and being easier to use each method. The below two sections explore ways we could go toward a more truly minimal API, and explain why we've currently landed on the above.
