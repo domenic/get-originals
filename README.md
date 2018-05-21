@@ -4,7 +4,25 @@ A proposal for a web platform API that allows access to the "original" versions 
 
 ## Motivation
 
-TODO explain. See https://github.com/drufball/layered-apis/issues/6.
+The [layered APIs](https://github.com/drufball/layered-apis) proposal, for creating new higher-level APIs, imposes a requirement that such APIs use no "magic" capabilities that are not exposed to JavaScript developers.
+
+One important technique used when writing robust APIs is to call the underlying operation, not the publicly-modifiable API. For example, the [async local storage](https://domenic.github.io/async-local-storage/) layered API specification says:
+
+> Let _request_ be the result of performing the steps listed in the description of [`IDBObjectStore`](https://w3c.github.io/IndexedDB/#idbobjectstore)'s [`get()`](https://w3c.github.io/IndexedDB/#dom-idbobjectstore-get) method on _store_, given the argument _key_.
+
+and
+
+> If [IsArray](https://tc39.github.io/ecma262/#sec-isarray)(_value_) is true, return true.
+
+This phrasing ensures that, even if the layered API is being invoked in a context where `IDBObjectStore.prototype.get` or `Array.isArray` have been mucked with, the specification is still able to run normally. This is important for allowing implementations more internal flexibility in how they implement the specification, without their every move being interceptable by JavaScript code runnign in the page.
+
+However, calling these underlying operations is not an ability currently available to web developers. Thus, it violates the layered API constraint of not using any un-layered magic.
+
+This proposal provides a series of methods for getting the "original" values of JavaScript and web platform built-ins, thus exposing this capability to web developers. In turn, that allows layered API specifications to use such phrases as the above, without violating their layering constraint.
+
+In addition to unlocking the layered API work, we envision this capability being generally useful for libraries interested in being robust against diverse environments. Beyond the web platform, Node.js may also be interested in implementing this API, so that they can write their built-in modules in a robust fashion.
+
+_This problem space was previously discussed in [drufball/layered-apis#6](https://github.com/drufball/layered-apis/issues/6), which you may enjoy reading for more background._
 
 ## Example usage
 
@@ -33,7 +51,7 @@ The numbered lines point to the various operations we need to be able to do with
 4. Invoking an instance getter (`result`)
 5. Invoking an instance setter (`onsuccess`)
 
-Here is how we would rewrite the above code to be robust, while using the get-originals API:
+Here is how we would rewrite the above code to be robust, while using the proposed get-originals API:
 
 ```js
 const Array = getOriginalGlobal("Array");
