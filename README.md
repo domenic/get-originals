@@ -14,11 +14,11 @@ and
 
 > If [IsArray](https://tc39.github.io/ecma262/#sec-isarray)(_value_) is true, return true.
 
-This phrasing ensures that, even if the layered API is being invoked in a context where `IDBObjectStore.prototype.get` or `Array.isArray` have been mucked with, the specification is still able to run normally. This is important for allowing implementations more internal flexibility in how they implement the specification, without their every move being interceptable by JavaScript code runnign in the page.
+This phrasing ensures that, even if the layered API is being invoked in a context where `IDBObjectStore.prototype.get` or `Array.isArray` have been mucked with, the specification is still able to run normally. This is important for allowing implementations more internal flexibility in how they implement the specification, without their every move being interceptable by JavaScript code running in the page.
 
-However, calling these underlying operations is not an ability currently available to web developers. Thus, it violates the layered API constraint of not using any un-layered magic.
+However, invoking these underlying operations is not an ability currently available to web developers. Thus, invoking them violates the layered API constraint of not using any un-layered magic.
 
-This proposal provides a series of methods for getting the "original" values of JavaScript and web platform built-ins, thus exposing this capability to web developers. In turn, that allows layered API specifications to use such phrases as the above, without violating their layering constraint.
+This proposal provides a series of methods for accessing the "original" values of JavaScript and web platform built-ins, thus exposing this capability to web developers. In turn, that allows layered API specifications to use such phrases as the above, without violating their layering constraint.
 
 In addition to unlocking the layered API work, we envision this capability being generally useful for libraries interested in being robust against diverse environments. Beyond the web platform, Node.js may also be interested in implementing this API, so that they can write their built-in modules in a robust fashion.
 
@@ -30,14 +30,14 @@ Consider what it would take to make the following code robust:
 
 ```js
 function storeIt(value) {
-  if (!Array.isArray(value)) {                // (1) (2)
-    throw new TypeError("Must be an array!"); // (1)
+  if (!Array.isArray(value)) {                     // (1)
+    throw new TypeError("Must be an array!");      // (2)
   }
 
-  const request = indexedDB.open("my-db", 1); // (1) (3)
+  const request = self.indexedDB.open("my-db", 1); // (3) (4) (5)
 
-  request.onsuccess = () => {                 // (5)
-    const database = request.result;          // (4)
+  request.onsuccess = () => {                      // (6)
+    const database = request.result;               // (4)
     // ...
   });
 }
@@ -45,25 +45,26 @@ function storeIt(value) {
 
 The numbered lines point to the various operations we need to be able to do without triggering any potential monkeypatches:
 
-1. Getting/using a global property (`Array`, `TypeError`, `indexedDB`)
-2. Getting/calling a static method (`isArray`)
-3. Getting/calling an instance method (`open`, `addEventListener`)
-4. Invoking an instance getter (`result`)
-5. Invoking an instance setter (`onsuccess`)
+1. Calling a static method (`Array.isArray()`)
+2. Getting a global constructor (`TypeError`)
+3. Referencing the global (`self`)
+4. Getting a property (`self.indexedDB`, `request.result`)
+5. Calling a method (`indexedDB.open()`)
+6. Setting a property (`request.onsuccess`)
 
 Here is how we would rewrite the above code to be robust, while using the proposed get-originals API:
 
 ```js
-const Array = getOriginalGlobal("Array");
-const TypeError = getOriginalGlobal("TypeError");
-const indexedDB = getOriginalGlobal("indexedDB");
+const oArrayIsArray = getOriginalStatic("Array", "isArray");
+const oTypeError = getOriginalConstructor("TypeError");
+const oIndexedDB = getOriginalProperty(originalSelf, "indexedDB");
 
 function storeIt(value) {
-  if (!callOriginalMethod(Array, "isArray", value)) {
-    throw new TypeError("Must be an array!");
+  if (!oArrayIsArray(value)) {
+    throw new oTypeError("Must be an array!");
   }
 
-  const request = callOriginalMethod(indexedDB, "open", "my-db", 1);
+  const request = callOriginalMethod(oIndexedDB, "open", "my-db", 1);
 
   setOriginalProperty(request, "onsuccess", () => {
     const database = getOriginalProperty(request, "result");
@@ -76,19 +77,23 @@ function storeIt(value) {
 
 We propose adding the following APIs to the global:
 
-- `getOriginalGlobal("name")`
-- `getOriginalProperty(obj, "propertyName")`
-- `setOriginalProperty(obj, "propertyName", newValue)`
-- `callOriginalMethod(obj, "methodName", ...args)`
+- `originalSelf`
+- `getOriginalConstructor("name")`
+- `callOriginalStaticMethod("base", "name", ...args)`
+- `getOriginalProperty(obj, "name")`
+- `setOriginalProperty(obj, "name", newValue)`
+- `callOriginalMethod(obj, "name", ...args)`
 
 All of these are non-writable and non-configurable (i.e. unforgeable), and available in all globals. In Web IDL:
 
 ```webidl
 interface mixin GetOriginals {
-  [Unforgeable] any getOriginalGlobal(DOMString name);
-  [Unforgeable] any getOriginalProperty(any target, DOMString propertyName);
-  [Unforgeable] void setOriginalProperty(any target, DOMString propertyName, any newValue);
-  [Unforgeable] any callOriginalMethod(any target, DOMString methodName, any... args);
+  [Unforgeable] readonly attribute object originalSelf;
+  [Unforgeable] any getOriginalConstructor(DOMString name);
+  [Unforgeable] any callOriginalStaticMethod(DOMString base, DOMString name, any... args);
+  [Unforgeable] any getOriginalProperty(any target, DOMString name);
+  [Unforgeable] void setOriginalProperty(any target, DOMString name, any newValue);
+  [Unforgeable] any callOriginalMethod(any target, DOMString name, any... args);
 }
 
 Window includes GetOriginals;
@@ -96,93 +101,122 @@ WorkerGlobalScope includes GetOriginals;
 WorkletGlobalScope includes GetOriginals;
 ```
 
-The intention is these APIs work equally well for the ECMAScript specification built-ins as they do for web platform built-ins. Web developers using these APIs should not need to know the difference. (This has some implementation complexities; see below.)
+The intention is these APIs work equally well for the ECMAScript specification built-ins as they do for web platform built-ins. Web developers using these APIs should not need to know the difference. This has some implementation complexities; the shape of the API was specifically chosen to try to mitigate this, as we will discuss below.
 
 We discuss the details more in the following sections:
 
-### `getOriginalGlobal()`
+### `originalSelf`
 
-The supplied name here can be any property of the global object. This includes:
-
-* All Web IDL interface and namespace names that are [exposed](https://heycam.github.io/webidl/#dfn-exposed) in the current realm;
-* The [properties of the global object](https://tc39.github.io/ecma262/#sec-global-object) listed in the JavaScript specification;
-* The [global properties](https://streams.spec.whatwg.org/#globals) listed in the Streams Standard;
-* The various Web IDL attributes and methods listed on the current global object (e.g. `close()` and `document` in `Window` globals), and in its prototype chain (e.g. `addEventListener` for globals that inherit from `EventTarget`).
-
-Essentially, everything a web developer could access is available here.
-
-Examples:
+This is simply an unforgeable version of the `self` global. It is mainly envisioned to be used in conjunction with `getOriginalProperty()`, `setOriginalProperty()`, and `callOriginalMethod()`. For example, a non-monkeypatchable way to open a popup window would be with
 
 ```js
-const o_Array = getOriginalGlobal("Array");
-const o_Text = getOriginalGlobal("Text");
-const o_ReadableStream = getOriginalGlobal("ReadableStream");
-const o_JSON = getOriginalGlobal("JSON");
-const o_CSS = getOriginalGlobal("CSS");
-const o_document = getOriginalGlobal("document");
-const o_postMessage = getOriginalGlobal("postMessage");
-const o_addEventListener = getOriginalGlobal("addEventListener");
+callOriginalMethod(originalSelf, "open", "https://example.com/");
 ```
 
-### `getOriginalProperty()`/`setOriginalProperty()`/`callOriginalMethod()`
+or you could get access to various globals via code like
 
-These methods allow the following target objects:
+```js
+const oNavigator = getOriginalProperty(originalSelf, "navigator");
+const oParent = getOriginalProperty(originalSelf, "parent");
+// ...
+```
 
-* Any of the class or namespace objects returned by `getOriginalGlobal()`, so that you can get their static properties;
+### `getOriginalConstructor(name)`
+
+This method retrieves the original versions of various "constructors" that are available on the global object.
+
+Concretely, the supplied `name` here can be one of the following:
+
+* All Web IDL interfaces that are [exposed](https://heycam.github.io/webidl/#dfn-exposed) in the current realm;
+* The [constructor properties of the global object](https://tc39.github.io/ecma262/#sec-constructor-properties-of-the-global-object) listed in the JavaScript specification;
+* The [global properties](https://streams.spec.whatwg.org/#globals) listed in the Streams Standard
+
+If the given `name` does not identify one of these values, or the value identified is not implemented by the current user agent, the function must return `undefined`.
+
+The return value must be identical (`===`) to the original value. For example, in a non-monkeypatched environment, it must be the case that
+
+```js
+getOriginalConstructor("TypeError") === TypeError;
+getOriginalConstructor("Node") === Node;
+// ...
+```
+
+Note that this will not retrieve _any_ global property: for example, `getOriginalConstructor("status")`, `getOriginalConstructor("NaN")`, or `getOriginalConstructor("JSON")` will all return `undefined`. It only retrieves a small set of constructors. For the rest, use `getOriginalProperty()`.
+
+**Implementation strategy:** We anticipate this being implemented with a lookup table, assembled at the same time as the realm is being created. This lookup table would gather contributions from both JS engine startup code and Web IDL bindings code.
+
+### `callOriginalStaticMethod(base, name, ...args)`
+
+This method calls various "static" methods that are available on various global constructors and namespaces.
+
+Concretely, the supplied `base` here is a string that can be one of the following:
+
+* All Web IDL interfaces and namespaces that are [exposed](https://heycam.github.io/webidl/#dfn-exposed) in the current realm;
+* The [constructor properties of the global object](https://tc39.github.io/ecma262/#sec-constructor-properties-of-the-global-object) listed in the JavaScript specification;
+* The [other properties of the global object](https://tc39.github.io/ecma262/#sec-other-properties-of-the-global-object) listed in the JavaScript specification;
+* The [global properties](https://streams.spec.whatwg.org/#globals) listed in the Streams Standard
+
+And the supplied `name` can be one of the following:
+
+* All static operations defined on such Web IDL interfaces;
+* All regular operations defined on such Web IDL namespaces;
+* All method "properties of the X constructor" defined in the corresponding section of the JavaScript specification (e.g., [`ArrayBuffer.isView()`](https://tc39.github.io/ecma262/#sec-arraybuffer.isview) is a method in a section titled "[Properties of the ArrayBuffer Constructor](https://tc39.github.io/ecma262/#sec-properties-of-the-arraybuffer-constructor));
+* All method properties of these "other properties of the global object" listed in the JavaScript specification (e.g., [`JSON.parse()`](https://tc39.github.io/ecma262/#sec-json.parse) is a method in the "[The JSON Object](https://tc39.github.io/ecma262/#sec-json-object)" section, which is linked to from "other properties of the global object");
+* All method "properties of the X constructor" defined in the corresponding section of the Streams Standard (none exist at this time)
+
+If the given `name` or `base` do not identify one of these values, or the specified value is not implemented by the current user agent, the function must throw a `TypeError`.
+
+**Implementation strategy**: We anticipate this being implemented with a combination of the lookup table used for `getOriginalConstructor()`, with implementations' existing abilities to find an execute the backing algorithm behind a given static method.
+
+### `getOriginalProperty(target, name)`/`setOriginalProperty(target, name, value)`/`callOriginalMethod(target, name, ...args)`
+
+These methods allow the following `target` values:
+
 * Any Web IDL platform object, except the global object;
 * Any of the classes defined in the JavaScript specification which perform brand checks (see [tc39/ecma262#354](https://github.com/tc39/ecma262/issues/354) for formalization);
 * All object types defined in the Streams Standard which perform brand checks.
 
-They allow the following target property/method names:
+Calling any of these methods on an invalid `target` value must throw a `TypeError`.
 
-* All static attributes and operations of Web IDL interfaces or namespaces, when applied to the corresponding interface or namespace object;
-* All "properties of the X constructor" defined in the JavaScript specification, when applied to one of the classes defined there;
-* All function properties of the namespaces defined in the JavaScript specification;
-* All regular attributes and operations of Web IDL interfaces, when applied to the corresponding Web IDL platform object
-* All "properties of the X prototype object" defined in the JavaScript specification, when applied to an instance of one of the classes defined there.
+These methods allow the following property/method `name` values:
 
-If the property/method name is not in this list, the result will be `undefined`.
+* All regular attributes and operations of Web IDL interfaces, when applied to the corresponding Web IDL platform object;
+* All "properties of the X prototype object" defined in the JavaScript specification (both methods and accessors), when applied to an instance of one of the classes defined there;
+* All "properties of the X prototype object" defined in the Streams Standard (both methods and accessors), when applied to an instance of one of the classes defined there;
+* For the global object, additionally, all "[function properties of the global object](https://tc39.github.io/ecma262/#sec-function-properties-of-the-global-object)" defined in the JavaScript specification.
 
-`callOriginalMethod()` accepts the same list of properties as `getOriginalProperty()`/`setOriginalProperty()`, but as usual trying to call a non-function will throw: e.g. `callOriginalMethod(window, "status")` will try to call a string and throw.
-
-We recognize this isn't fully formalized, especially for JavaScript. We look forward to turning it into a full specification.
-
-Note that we explicitly disallow the global object, as it has many properties (e.g. constructors) that are not from conventional sources. You should use `getOriginalGlobal()` for those. But, see the discussion below.
-
-Examples:
+Calling `getOriginalProperty()` with an invalid `name` value will return `undefined`. Calling `setOriginalProperty()` with an invalid `name` value will do nothing. Calling `callOriginalMethod()` with an invalid `name` value will throw a `TypeError`. Here, "invalid" includes being in the wrong category, e.g.
 
 ```js
-// Assume we have already gotten original globals:
-// o_console, o_Response, o_Array, o_document
-
-const o_log = getOriginalProperty(o_console, "log");
-const o_redirect = getOriginalProperty(o_Response, "redirect");
-
-const isAnArray = callOriginalMethod(o_Array, "isArray", [1, 2, 3]);
-
-const o_body = getOriginalProperty(o_document, "body");
-callOriginalMethod(o_body, "setAttribute", "bgcolor", "red");
-
-const target = getOriginalProperty(someEvent, "target");
-
-setOriginalProperty(o_document, "cookie", "foo=bar");
+getOriginalProperty(originalSelf, "close");    // returns undefined: Window's close() is an operation
+setOriginalProperty(originalSelf, "toolbar");  // does nothing: Window's toolbar is readonly
+callOriginalMethod(originalSelf, "status");    // throws a TypeError: Window's status is an attribute
 ```
+
+**Implementation strategy**:
+
+* For Web IDL platform objects, the idea is to unwrap to the underlying C++/Rust property/method, and get/set/call it. Validation that that property/method exists might be tricky?
+* For JavaScript objects, the idea is to determine their brand and call the appropriate original method/getter/setter code. Hopefully this can be done with some sort of switch over the brand slot?
+* The global object might need some special casing since it's both. If that's too hard, we can eliminate the "function properties of the global object" clause.
 
 ## API discussion
 
-### Implementation strategies
+### Motivation for this API surface
 
-For `getOriginalGlobal()`, the intention is for implementations to store the originals in parallel to installing them on the global object, or to snapshot them after setting up the global object. This should be done for every property of the global object.
+The primary motivations for this API surface are:
 
-_Open question:_ what kind of overhead would this add, either in memory or in startup time? Is there an alternative implementation strategy that would cost less resources? If so, would it require changing the API in some way? (For example, you could imagine that if the API were restricted to Web IDL interface and namespace objects, an implementation might already have a table of those available.)
+1. Be implementable efficiently
+2. Do not require authors to understand what specification a class/method/etc. is defined in.
 
-For the methods that operate on properties of various objects, the implementation strategy branches depending on the target:
+These are somewhat in conflict, as the natural implementation strategies for acessing the originals of values provided by the JS engine are different than those provided by Web IDL bindings. We think we have threaded the needle relatively well, but welcome feedback.
 
-* For Web IDL platform objects, simply unwrap the JavaScript object to get at the underlying C++/Rust/etc. property/method, and get/set/call it.
-* For JavaScript built-in types, perform a series of brand checks? Can this be done as a switch statement that jumps to the right branch, or would this require O(number of JS spec objects) tests? Then, once you know what type it is, is it easy to call the original getter/setter/method?
-* For accessing static properties/methods of constructors and namespaces, can we even identify these objects? They won't have any brand installed on them...
+In particular, the requirement to be efficiently implementable explains this API's focus on categorization. For example:
 
-_Open questions:_ As you can see, the above points to potential implementation difficulties. Consultation with implementers is necessary. It seems plausible that static properties/methods might need a separate dedicated API, e.g. `getOriginalStatic("Array", "isArray")`.
+* Instead of treating statics as original properties or methods of their constructor, we carved out a separate `callOriginalStaticMethod()` method.
+* Instead of treating all globals equally, we specifically selected the "constructors" subset to be accessible via `getOriginalConstructor()`.
+* Instead of directly exposing the original function objects in all cases, e.g. allowing retrieval of the original value of `window.close`, or of the getter function for `window.status`, we only did that for the specific case of constructors, which need to create objects that will pass `instanceof` and similar checks.
+
+An [earlier version](https://github.com/domenic/get-originals/tree/dab86957e9f736d0884bf1f3370962ec5a383108#the-api) was more minimal, but when we tried to envision how it would be implemented, we realized it would be quite difficult. The current version attempts to do better.
 
 ### Instance-based design rationale
 
@@ -204,26 +238,44 @@ Another issue is with regard to the existing lack of interoperability around var
 
 You can imagine various workarounds. For example, maintaining a separate "original prototype chain" which you can do lookups on, so that even in that hypothetical future, `"Array.prototype.slice"` can be treated the same way as `"IndexedCollection.prototype.slice"`. But this seems like a lot of work, for very little gain. Especially since the instance-based approach works so nicely, at least for Web IDL-backed objects.
 
-### Same values?
+### Method calls with variadic arguments
 
-One important question is whether the "originals" returned by these methods have the same _object identity_ as the originals, or just the same behavior. That is, assuming the web developer has not modified any built-ins, are the following true?
+Both `callOriginalMethod()` and `callOriginalStaticMethod()` take the arguments to be passed variadically, after the identifying information for the method in question.
+
+The reason for preferring this over using an arguments array (as seen in e.g. JavaScript's `Reflect.call`) is that array literals are not safe from monkeypatching. Pretend for a moment we used arrays for `callOriginalMethod()`. Then we have this unfortunate scenario:
 
 ```js
-getOriginalGlobal("Promise") === Promise;
-getOriginalProperty(Promise, "resolve") === Promise.resolve;
+// Author code:
+Object.defineProperty(Array.prototype, Symbol.iterator, {
+  get() {
+    throw new Error("boo!");
+  }
+});
+
+// Library code, trying to be robust:
+callOriginalMethod(originalSelf, "open", ["https://example.com/"]);
 ```
 
-If this is not required, an implementation would be able to generate new JS "wrappers" for a given global/property/function on the fly, which could reduce the need to save all the originals in memory.
+The call to `callOriginalMethod()` here will throw in the process of processing the `["https://example.com/"]` argument. The attempts to be robust have failed.
 
-At least for `getOriginalGlobal()`, we think it's required to preserve identity. The reason is the following:
+Avoiding this problem involves bootstrapping your way to a "safe array" constructor, whose iterator is hand-coded to return the array elements appropriately. This is quite difficult, not in the least because until you have this in hand, you can't effectively use `callOriginalMethod()` or `callOriginalStaticMethod()`, so the boostrap process itself becomes harder. We think it might be technically doable, but it certainly won't be easy. Instead, we think using variadic arguments for `callOriginalMethod()` and `callOriginalStaticMethod()` is much simpler.
+
+### Same values
+
+One important question is whether the "originals" returned by these methods have the same _object identity_ as the originals, or just the same behavior.
+
+Because of our API design, this question only arises for one method: `getOriginalConstructor()`. In all other cases the "original" being used is not actually returned to script; it is simply invoked. This should allow easier implementation, by going directly to the backing algorithm, instead of having to save away the appropriate JavaScript function object.
+
+But for `getOriginalConstructor()`, it's important to give the exact original constructor, because of cases like this:
 
 ```js
 // Library code:
-const o_Promise = getOriginalGlobal("Promise");
-const o_setTimeout = getOriginalGlobal("setTimeout");
+const o_Promise = getOriginalConstructor("Promise");
 
 function delay(ms) {
-  return new o_Promise(resolve => o_setTimeout(resolve, ms));
+  return new o_Promise(resolve => {
+    callOriginalMethod(originalSelf, "setTimeout", resolve, ms)
+  });
 }
 ```
 
@@ -232,77 +284,52 @@ function delay(ms) {
 console.assert(delay(500) instanceof Promise);
 ```
 
-That is, if `getOriginalGlobal("Promise")` did not have the same identity as the existing global `Promise`, consumers would be able to easily observe the difference, in a way that would be undesireable. This example generalizes to any constructor.
+That is, if `getOriginalConstructor("Promise")` did not have the same identity as the existing global `Promise`, consumers would be able to easily observe the difference, in a way that would be undesireable. This example generalizes to any constructor.
 
-It's less clear how important identity preservation is for `getOriginalProperty()`. As long as `getOriginalProperty(Promise, "resolve")` behaves the same as `Promise.resolve`—including returning instances of the global `Promise` constructor—then we don't really care if it is exactly the same function. But, it would probably be pretty confusing for developers to allow such divergence?
+### Things that do not work
 
-### Do we need...?
-
-The current API is somewhat of a mid-point between minimizing the number of methods and being easier to use each method. The below two sections explore ways we could go toward a more truly minimal API, and explain why we've currently landed on the above.
-
-#### Do we need `getOriginalGlobal()`?
-
-If we added a way to get the original global this value, and changed the definition of `getOriginalProperty()`, we could eliminate `getOriginalGlobal()`. For example, instead of
+The above sections explain how each part of this API is geared toward accessing specific originals. Here we give a series of examples of things that, according to those rules, do _not_ work. This should hopefully make the boundaries of the API clearer:
 
 ```js
-const Array = getOriginalGlobal("Array");
+// Constructor properties of the global: use getOriginalConstructor() instead.
+
+getOriginalProperty(originalSelf, "TypeError");   // undefined
+getOriginalProperty(originalSelf, "Node")         // undefined
+
+
+// Methods: use callOriginalMethod() instead.
+
+getOriginalProperty(originalSelf, "close");       // undefined
+getOriginalProperty(originalSelf, "encodeURI");   // undefined
+getOriginalProperty(someNode, "isEqualNode");     // undefined
+
+
+// Static methods: use callOriginalStaticMethod() instead.
+
+getOriginalProperty(Array, "isArray");            // undefined
+callOriginalMethod(Number, "isNaN", 5);           // TypeError
+
+
+// Non-method statics: use the actual constant values instead
+
+getOriginalProperty(Number, "MAX_SAFE_INTEGER");  // undefined
+getOriginalProperty(Math, "PI");                  // undefined
+getOriginalProperty(Node, "COMMENT_NODE");        // undefined
+getOriginalProperty(originalSelf, "NaN");         // undefined
 ```
-
-you would do
-
-```js
-const Array = getOriginalProperty(originalSelf, "Array");
-```
-
-where `originalSelf` is a new non-configurable non-writable property on all globals that returns the current global this value. Or, we could make `getOriginalProperty(null, "Array")` mean to get it from the global.
-
-The complexity here is that the set of properties of the global object is assembled in a rather different way from other objects. Essentially, it has a lot of non-method data properties, installed by the JavaScript and Web IDL specifications. Thus, for example, the implementation strategy outlined for Web IDL platform objects above would not work, even though the global is a Web IDL platform object. As such we've tentatively kept `getOriginalGlobal()` as a separate method.
-
-#### Do we need `callOriginalMethod()`?
-
-We could eliminate `callOriginalMethod()` in favor of making people use (the original version of) `Reflect.call`, e.g. instead of
-
-```js
-const request = callOriginalMethod(indexedDB, "open", "my-db", 1);
-```
-
-you would do
-
-```js
-const Reflect = getOriginalGlobal("Reflect");
-const Reflect_call = getOriginalProperty(Reflect, "call");
-
-const request = Reflect_call(indexedDB, "open", ["my-db", 1]);
-```
-
-Actually you would need to do more than that, because array literals are not safe:
-
-```js
-const Object = getOriginalGlobal("Object");
-const Object_setPrototypeOf = getOriginalProperty(Object, "setPrototypeOf");
-
-const safeArray(arr) {
-  Object_setPrototypeOf(arr, null);
-  return arr;
-}
-
-const request = Reflect_call(indexedDB, safeArray(["open", 1]));
-```
-
-This is kind of terrible though, so it'd be nice to give people `callOriginalMethod()`. Specifically, we designed `callOriginalMethod()` to take the method arguments as positional parameters, instead of an array, to avoid the extra hassle there.
 
 ## Automatic rewriting/enforcement of robustness
 
 It looks like you would do something like:
 
-- Don't allow any direct access to globals: must use `getOriginalGlobal()`. Easy to detect by checking for unknown bindings.
+- Don't allow any direct access to globals: must use `getOriginalConstructor()` or `getOriginalProperty(originalSelf, ...)`. Easy to detect by checking for unknown bindings.
 - First pass: don't allow any `x.y`-based property access
   - It's never safe on browser-provided objects
   - Even for author-created objects you should probably be using their private state (that you control), not public API
   - If you really need an escape hatch, we could allow `x["y"]`, or some kind of `// I know what I'm doing` comment
 - Can we track which objects are browser-created and automatically rewrite them to use this pattern?
 
-Looking at the [non-robust async local storage implementation](https://github.com/domenic/async-local-storage/blob/312d0fa31e6864b41df82119a9468db18c54ac19/prototype/implementation.mjs), it seems like every `x.y` property access should be converted to use the originals... except maybe `.length` on arrays. The array manipulation in general needs a bit more care and may not be doable without observable property access.
+Looking at the [non-robust async local storage implementation](https://github.com/domenic/async-local-storage/blob/312d0fa31e6864b41df82119a9468db18c54ac19/prototype/implementation.mjs), it seems like every `x.y` property access should be converted to use the originals... except maybe `.length` on arrays. The array manipulation in general needs a bit more care.
 
 ## Future extension: let author code expose its own originals
 
