@@ -172,7 +172,7 @@ If the given `name` or `base` do not identify one of these values, or the specif
 
 These methods allow the following `target` values:
 
-* Any Web IDL platform object, except the global object;
+* Any Web IDL platform object;
 * Any of the classes defined in the JavaScript specification which perform brand checks (see [tc39/ecma262#354](https://github.com/tc39/ecma262/issues/354) for formalization);
 * All object types defined in the Streams Standard which perform brand checks.
 
