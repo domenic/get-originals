@@ -130,31 +130,27 @@ The most interesting conversion above was the `zip()` function. Some notes:
 Consider the following helper:
 
 ```js
-// Not sure this use of getOriginalProperty() is legit per the readme, but let's say it was...
-const Symbol_iterator = getOriginalProperty(getOriginalConstructor("Symbol"), "iterator");
+const internalArrayProto = callOriginalStaticMethod(Object, "create", null);
+internalArrayProto.toRealArray = function () {
+  const result = [];
+  for (let i = 0; i < this.length; ++i) {
+    callOriginalStaticMethod("Object", "defineProperty", result, i, {
+      value: this[i],
+      enumerable: true,
+      configurable: true,
+      writable: true
+    });
+  }
+
+  return result;
+};
 
 function createInternalArray() {
   const arr = [];
-  callOriginalStaticMetod("Object", "setPrototypeOf", arr, null);
-  arr[Symbol_iterator] = createInternalArrayIteratorFromThis;
+  callOriginalStaticMethod("Object", "setPrototypeOf", arr, internalArrayProto);
   return arr;
 }
-
-function createInternalArrayIteratorFromThis() {
-  const arr = this;
-  let nextIndex = 0;
-  return {
-    next() {
-      if (nextIndex >= arr.length) {
-        return { value: undefined, done: true };
-      }
-      return { value: arr[i], done: false };
-    }
-  };
-}
 ```
-
-The iterator-shenanigans above make it so that we can convert from an internal array to a real array by doing `[...internalArr]`.
 
 This would allow us to write the following `zip()` implementation:
 
@@ -165,7 +161,7 @@ function zip(a, b) {
     resultInternal[i] = [a[i], b[i]];
   }
 
-  return [...resultInternal];
+  return resultInternal.toRealArray();
 }
 ```
 
