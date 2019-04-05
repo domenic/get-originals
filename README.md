@@ -1,30 +1,92 @@
 # Accessing the originals
 
-A proposal for a web platform API that allows access to the "original" versions of built-in objects' properties and methods.
+A proposal for a web platform API that allows access to the "original" versions of the global built-in objects' properties and methods, via a [built-in module](https://github.com/tc39/proposal-javascript-standard-library/).
 
-## Motivation
+## Motivations
 
-The [layered APIs](https://github.com/drufball/layered-apis) proposal, for creating new higher-level APIs, imposes a requirement that such APIs use no "magic" capabilities that are not exposed to JavaScript developers.
+### Writing robust code
 
-One important technique used when writing robust APIs is to call the underlying operation, not the publicly-modifiable API. For example, the [async local storage](https://domenic.github.io/async-local-storage/) layered API specification says:
+An important technique when writing robust APIs is to call the underlying operation, not the publicly-modifiable API. This is normally quite difficult in JavaScript. A simple own-property check, such as
 
-> Let _request_ be the result of performing the steps listed in the description of [`IDBObjectStore`](https://w3c.github.io/IndexedDB/#idbobjectstore)'s [`get()`](https://w3c.github.io/IndexedDB/#dom-idbobjectstore-get) method on _store_, given the argument _key_.
+```js
+const result = Object.prototype.hasOwnProperty.call(someObject, "someProp");
+```
 
-and
+is subject to interference in any of the following ways:
 
-> If [IsArray](https://tc39.github.io/ecma262/#sec-isarray)(_value_) is true, return true.
+* `globalThis.Object` could be overridden
+* `Object.prototype` could be overridden
+* `Object.prototype.hasOwnProperty` could be overridden
+* `Object.prototype.hasOwnProperty.call` could be set (shadowing `Function.prototype.call`)
+* `Function.Prototype.call` could be overridden
 
-This phrasing ensures that, even if the layered API is being invoked in a context where `IDBObjectStore.prototype.get` or `Array.isArray` have been mucked with, the specification is still able to run normally. This is important for allowing implementations more internal flexibility in how they implement the specification, without their every move being interceptable by JavaScript code running in the page.
+The standard way of avoiding this is by practicing [safe meta-programming](https://web.archive.org/web/20160805225710/http://wiki.ecmascript.org/doku.php?id=conventions:safe_meta_programming), potentially assisted by tools or type systems. This relies on grabbing the "original" values of the globals ahead of time; see the linked page for more examples.
 
-However, invoking these underlying operations is not an ability currently available to web developers. Thus, invoking them violates the layered API constraint of not using any un-layered magic.
+However, conventional safe meta-programming techniques only work if you can guarantee that your script is the first on the page to run. (Otherwise, previously-run script may have interfered with the globals before you can grab the original values.) This is increasingly infeasible in a library-heavy world; only one library can run first, after all.
 
-This proposal provides a series of methods for accessing the "original" values of JavaScript and web platform built-ins, thus exposing this capability to web developers. In turn, that allows layered API specifications to use such phrases as the above, without violating their layering constraint.
+Additionally, the requirement to run first (or at least as early as possible) in the loading cycle is tension with the movement toward more lazy-loading of non-essential code. Third-party scripts, such as embeds, analytics, or ads, are perfect candidates for lazy-loading. However, the authors of these third party scripts need to be able to run in as many environments as possible, and as such greatly benefit from safe meta-programming.
 
-In addition to unlocking the layered API work, we envision this capability being generally useful for libraries interested in being robust against diverse environments. Beyond the web platform, Node.js may also be interested in implementing this API, so that they can write their built-in modules in a robust fashion.
+The get-originals proposal provides a first-class way to get the original values needed for safe meta-programming, even for scripts that are loaded later in the page's lifecycle.
 
-_This problem space was previously discussed in [drufball/layered-apis#6](https://github.com/drufball/layered-apis/issues/6), which you may enjoy reading for more background._
+### Bridging the module and global worlds
+
+There are many benefits from obtaining as many standard-library features as possible from the module system, instead of the global object. Developers often prefer the explicitness of such `import`s to global dereferences, and tooling appreciates the static analyzability. As such, by transposing global built-ins into the module system, the get-originals proposal allows writing code that makes its standard library dependencies explicit intead of implicit.
+
+This benefit is a minor nice-to-have for JavaScript developers. But it is a significant upgrade for WebAssembly developers, which rely exclusively on their module system to be able to import functionality into their programs.
+
+Right now, any attempts to access the platform's standard library need to be explicitly proxied via a JavaScript wrapper:
+
+```js
+WebAssembly.instantiateStreaming(fetch("simple.wasm"), {
+  console: {
+    log: console.log
+  },
+  TextEncoder: {
+    default: TextEncoder,
+    encodeInto: TextEncoder.prototype.encodeInto
+  },
+  /* ... */
+});
+```
+
+The WebAssembly module system then can then import these provided function values.
+
+The get-originals proposal provides direct, first-class access to the built-in globals (normally inaccessible to WebAssembly) via the module system ([soon](https://littledan.github.io/esm-integration/) accessible to WebAssembly). This obviates the need to bridge all used functionality through JavaScript.
+
+TODO: explain connection with Web IDL bindings, anyref, etc. for standard library functionality that doesn't take just integer types. Perhaps change above example if it relies too heavily on those to be workable.
+
+### Platform layering
+
+All web specifications, and many parts of the JavaScript specification, use the original functionality, instead of going through web-developer-modifiable APIs.
+
+For example, [the algorithm for `JSON.stringify()`](https://tc39.github.io/ecma262/#sec-json.stringify) uses the original [IsArray](https://tc39.github.io/ecma262/#sec-isarray) abstract operation, and not the publicly-modifiable [`Array.isArray()`](https://tc39.github.io/ecma262/#sec-array.isarray) function, to determine the serialization of the values it is passed. The [toggleAttribute()](https://dom.spec.whatwg.org/#dom-element-toggleattribute) method directly operates on the underlying attributes collection of the element in question, instead of calling `this.setAttribute()` or `this.removeAttribute()`.
+
+It is currently impossible to emulate these semantics in JavaScript. This means that we have discovered a missing low-level capability—access to the original, unmodified platform operations—which our higher-level features are built on top of. The [Extensible Web Manifesto](https://extensiblewebmanifesto.org/) calls on us to prioritize efforts which expose such low-level capabilities to web developers, and in doing so, explain the existing features built on top of them.
+
+In addition to the general principles of the Extensible Web Manifesto, we'll note that access to the originals is required for full-fidelity polyfilling. Just like the real implementation of `toggleAttribute()`, a polyfill should be robust in the face of tampering with `setAttribute()` and `removeAttribute()`.
 
 ## Example usage
+
+### Basic example
+
+Consider our introductory example from above:
+
+```js
+const result = Object.prototype.hasOwnProperty.call(someObject, "someProp");
+```
+
+To make this robust, and emulate the way that the web platform would check for own properties, we could do the following:
+
+```js
+import { apply } from "std:global/Reflect";
+import { hasOwnProperty } from "std:global/Object";
+
+const result = apply(hasOwnProperty, someObject, ["someProp"]);
+```
+
+TODO WebAssembly example.
+
+### More complex example
 
 Consider what it would take to make the following code robust:
 
@@ -46,7 +108,7 @@ function storeIt(value) {
 The numbered lines point to the various operations we need to be able to do without triggering any potential monkeypatches:
 
 1. Calling a static method (`Array.isArray()`)
-2. Getting a global constructor (`TypeError`)
+2. Invoking a global constructor (`TypeError`)
 3. Referencing the global (`self`)
 4. Getting a property (`self.indexedDB`, `request.result`)
 5. Calling a method (`indexedDB.open()`)
@@ -55,222 +117,84 @@ The numbered lines point to the various operations we need to be able to do with
 Here is how we would rewrite the above code to be robust, while using the proposed get-originals API:
 
 ```js
-const oArrayIsArray = getOriginalStatic("Array", "isArray");
-const oTypeError = getOriginalConstructor("TypeError");
-const oIndexedDB = getOriginalProperty(originalSelf, "indexedDB");
+import oSelf from "std:global";
+import { apply } from "std:global/Reflect";
+import { isArray_static } from "std:global/Array";
+import TypeError as oTypeError from "std:global/TypeError";
+
+import { indexedDB_get } from "std:global/Window";
+import { open as IDBFactory_open } from "std:/global/IDBFactory";
+import { onsuccess_set as IDBRequest_onsuccess_set,
+         result_get as IDBRequest_result_get } from "std:global/IDBRequest";
+
+const oIndexedDB = apply(indexedDB_get, oSelf);                     // (3) (4)
 
 function storeIt(value) {
-  if (!oArrayIsArray(value)) {
-    throw new oTypeError("Must be an array!");
+  if (!isArray_static(value)) {                                     // (1)
+    throw new oTypeError("Must be an array!");                      // (2)
   }
 
-  const request = callOriginalMethod(oIndexedDB, "open", "my-db", 1);
+  const request = apply(IDBFactory_open, oIndexedDB, ["my-db", 1]); // (5)
 
-  setOriginalProperty(request, "onsuccess", () => {
-    const database = getOriginalProperty(request, "result");
+  apply(IDBRequest_onsuccess_set, request, [() => {                 // (6)
+    const database = apply(IDBRequest_result_get, request);         // (4)
     // ...
-  });
+  }]);
 }
 ```
+
+Obviously, as with all safe meta-programming, this code is not that pleasant to write by hand, and hard to get correct. We are exploring tools to automate this rewriting process.
 
 ## The API
 
-We propose adding the following APIs to the global:
+We propose adding the a new [built-in module](https://github.com/tc39/proposal-javascript-standard-library/) for every exposed global constructor and namespace object, of the form `"std:global/X"`. We would also have a special `"std:global"` built-in module which default-exports the global object itself (with no other exports).
 
-- `originalSelf`
-- `getOriginalConstructor("name")`
-- `callOriginalStaticMethod("base", "name", ...args)`
-- `getOriginalProperty(obj, "name")`
-- `setOriginalProperty(obj, "name", newValue)`
-- `callOriginalMethod(obj, "name", ...args)`
+Roughly speaking, each such module would have a series of exports:
 
-All of these are non-writable and non-configurable (i.e. unforgeable), and available in all globals. In Web IDL:
+- For classes:
+  - The default export would be the constructor function.
+  - The methods of the associated class would be exported under their original names.
+  - Any static methods of the associated class would be exposed with a `_static` suffix.
+  - Any getters and setters on the associated class's prototype would be exposed with `_get` and `_set` suffixes.
+- For namespaces:
+  - The functions stored on the namespace would be exported under their original names.
 
-```webidl
-interface mixin GetOriginals {
-  [Unforgeable] readonly attribute object originalSelf;
-  [Unforgeable] any getOriginalConstructor(DOMString name);
-  [Unforgeable] any callOriginalStaticMethod(DOMString base, DOMString name, any... args);
-  [Unforgeable] any getOriginalProperty(any target, DOMString name);
-  [Unforgeable] void setOriginalProperty(any target, DOMString name, any newValue);
-  [Unforgeable] any callOriginalMethod(any target, DOMString name, any... args);
-}
+_Open question: should we include data properties, i.e. "constants"? For example, should you be able to get the original value of `Math.PI` or `Event.AT_TARGET`? We omit them for now._
 
-Window includes GetOriginals;
-WorkerGlobalScope includes GetOriginals;
-WorkletGlobalScope includes GetOriginals;
-```
+So, for example:
 
-The intention is these APIs work equally well for the ECMAScript specification built-ins as they do for web platform built-ins. Web developers using these APIs should not need to know the difference. This has some implementation complexities; the shape of the API was specifically chosen to try to mitigate this, as we will discuss below.
+- `"std:global/Event"` (based on the [`Event` class](https://dom.spec.whatwg.org/#interface-event)) would expose:
+  - Method exports `composedPath`, `stopPropagation`, `stopImmediatePropagation`, `preventDefault`,  `initEvent`.
+  - Getter/setter exports `type_get`, `target_get`, `srcElement_get`, `currentTarget_get`, `eventPhase_get`, `bubbles_get`, `cancelable_get`, `returnValue_get`, `returnValue_set`, `defaultPrevented_get`, `composed_get`, `timeStamp_get`
+- `"std:global/Reflect"` (based on the [`Reflect` namespace](https://tc39.github.io/ecma262/#sec-reflect-object)) would expose:
+  - Function exports `apply`, `construct`, `defineProperty`, `deleteProperty`, `get`, `getOwnPropertyDescriptor`, `getPrototypeOf`, `has`, `isExtensible`, `ownKeys`, `preventExtensions`, `set`, `setPrototypeOf`
+- `"std:global/Number"` (based on the [`Number` class](https://tc39.github.io/ecma262/#sec-number-objects)) would expose:
+  - Method exports: `toExponential`, `toFixed`, `toLocaleString`, `toPrecision`, `toString`, `valueOf`
+  - Static method exports: `isFinite_static`, `isInteger_static`, `isNaN_static`, `isSafeInteger_static`, `parseFloat_static`, `parseInt_static`
 
-We discuss the details more in the following sections:
+_Open question: Should we include `[Unforgeable]` methods/getters/setters, such as `Event`'s `isTrusted` getter? They are not necessary for our use cases, since they are already original, but including them may simplify implementation or usage._
 
-### `originalSelf`
+### Identity is preserved
 
-This is simply an unforgeable version of the `self` global. It is mainly envisioned to be used in conjunction with `getOriginalProperty()`, `setOriginalProperty()`, and `callOriginalMethod()`. For example, a non-monkeypatchable way to open a popup window would be with
+Each of these exports would be the same function object as can be accessed via the "normal" route. So, for example, assuming nobody had messed with the built-ins yet, we would have
 
 ```js
-callOriginalMethod(originalSelf, "open", "https://example.com/");
+import { toExponential } from "std:global/Number";
+console.assert(toExponential === Number.toExponential);
 ```
 
-or you could get access to various globals via code like
+and even
 
 ```js
-const oNavigator = getOriginalProperty(originalSelf, "navigator");
-const oParent = getOriginalProperty(originalSelf, "parent");
-// ...
+import { type_get } from "std:global/Event";
+console.assert(type_get === Object.getOwnPropertyDescriptor(Event.prototype, "type").get);
 ```
 
-### `getOriginalConstructor(name)`
-
-This method retrieves the original versions of various "constructors" that are available on the global object.
-
-Concretely, the supplied `name` here can be one of the following:
-
-* All Web IDL interfaces that are [exposed](https://heycam.github.io/webidl/#dfn-exposed) in the current realm;
-* The [constructor properties of the global object](https://tc39.github.io/ecma262/#sec-constructor-properties-of-the-global-object) listed in the JavaScript specification;
-* The [global properties](https://streams.spec.whatwg.org/#globals) listed in the Streams Standard
-
-If the given `name` does not identify one of these values, or the value identified is not implemented by the current user agent, the function must return `undefined`.
-
-The return value must be identical (`===`) to the original value. For example, in a non-monkeypatched environment, it must be the case that
-
-```js
-getOriginalConstructor("TypeError") === TypeError;
-getOriginalConstructor("Node") === Node;
-// ...
-```
-
-Note that this will not retrieve _any_ global property: for example, `getOriginalConstructor("status")`, `getOriginalConstructor("NaN")`, or `getOriginalConstructor("JSON")` will all return `undefined`. It only retrieves a small set of constructors. For the rest, use `getOriginalProperty()`.
-
-**Implementation strategy:** We anticipate this being implemented with a lookup table, assembled at the same time as the realm is being created. This lookup table would gather contributions from both JS engine startup code and Web IDL bindings code.
-
-### `callOriginalStaticMethod(base, name, ...args)`
-
-This method calls various "static" methods that are available on various global constructors and namespaces.
-
-Concretely, the supplied `base` here is a string that can be one of the following:
-
-* All Web IDL interfaces and namespaces that are [exposed](https://heycam.github.io/webidl/#dfn-exposed) in the current realm;
-* The [constructor properties of the global object](https://tc39.github.io/ecma262/#sec-constructor-properties-of-the-global-object) listed in the JavaScript specification;
-* The [other properties of the global object](https://tc39.github.io/ecma262/#sec-other-properties-of-the-global-object) listed in the JavaScript specification;
-* The [global properties](https://streams.spec.whatwg.org/#globals) listed in the Streams Standard
-
-And the supplied `name` can be one of the following:
-
-* All static operations defined on such Web IDL interfaces;
-* All regular operations defined on such Web IDL namespaces;
-* All method "properties of the X constructor" defined in the corresponding section of the JavaScript specification (e.g., [`ArrayBuffer.isView()`](https://tc39.github.io/ecma262/#sec-arraybuffer.isview) is a method in a section titled "[Properties of the ArrayBuffer Constructor](https://tc39.github.io/ecma262/#sec-properties-of-the-arraybuffer-constructor));
-* All method properties of these "other properties of the global object" listed in the JavaScript specification (e.g., [`JSON.parse()`](https://tc39.github.io/ecma262/#sec-json.parse) is a method in the "[The JSON Object](https://tc39.github.io/ecma262/#sec-json-object)" section, which is linked to from "other properties of the global object");
-* All method "properties of the X constructor" defined in the corresponding section of the Streams Standard (none exist at this time)
-
-If the given `name` or `base` do not identify one of these values, or the specified value is not implemented by the current user agent, the function must throw a `TypeError`.
-
-**Implementation strategy**: We anticipate this being implemented with a combination of the lookup table used for `getOriginalConstructor()`, with implementations' existing abilities to find an execute the backing algorithm behind a given static method.
-
-### `getOriginalProperty(target, name)`/`setOriginalProperty(target, name, value)`/`callOriginalMethod(target, name, ...args)`
-
-These methods allow the following `target` values:
-
-* Any Web IDL platform object;
-* Any of the classes defined in the JavaScript specification which perform brand checks (see [tc39/ecma262#354](https://github.com/tc39/ecma262/issues/354) for formalization);
-* All object types defined in the Streams Standard which perform brand checks.
-
-Calling any of these methods on an invalid `target` value must throw a `TypeError`.
-
-These methods allow the following property/method `name` values:
-
-* All regular attributes and operations of Web IDL interfaces, when applied to the corresponding Web IDL platform object;
-* All "properties of the X prototype object" defined in the JavaScript specification (both methods and accessors), when applied to an instance of one of the classes defined there;
-* All "properties of the X prototype object" defined in the Streams Standard (both methods and accessors), when applied to an instance of one of the classes defined there;
-* For the global object, additionally, all "[function properties of the global object](https://tc39.github.io/ecma262/#sec-function-properties-of-the-global-object)" defined in the JavaScript specification.
-
-Calling `getOriginalProperty()` with an invalid `name` value will return `undefined`. Calling `setOriginalProperty()` with an invalid `name` value will do nothing. Calling `callOriginalMethod()` with an invalid `name` value will throw a `TypeError`. Here, "invalid" includes being in the wrong category, e.g.
-
-```js
-getOriginalProperty(originalSelf, "close");    // returns undefined: Window's close() is an operation
-setOriginalProperty(originalSelf, "toolbar");  // does nothing: Window's toolbar is readonly
-callOriginalMethod(originalSelf, "status");    // throws a TypeError: Window's status is an attribute
-```
-
-**Implementation strategy**:
-
-* For Web IDL platform objects, the idea is to unwrap to the underlying C++/Rust property/method, and get/set/call it. Validation that that property/method exists might be tricky?
-* For JavaScript objects, the idea is to determine their brand and call the appropriate original method/getter/setter code. Hopefully this can be done with some sort of switch over the brand slot?
-* The global object might need some special casing since it's both. If that's too hard, we can eliminate the "function properties of the global object" clause.
-
-## API discussion
-
-### Motivation for this API surface
-
-The primary motivations for this API surface are:
-
-1. Be implementable efficiently
-2. Do not require authors to understand what specification a class/method/etc. is defined in.
-
-These are somewhat in conflict, as the natural implementation strategies for acessing the originals of values provided by the JS engine are different than those provided by Web IDL bindings. We think we have threaded the needle relatively well, but welcome feedback.
-
-In particular, the requirement to be efficiently implementable explains this API's focus on categorization. For example:
-
-* Instead of treating statics as original properties or methods of their constructor, we carved out a separate `callOriginalStaticMethod()` method.
-* Instead of treating all globals equally, we specifically selected the "constructors" subset to be accessible via `getOriginalConstructor()`.
-* Instead of directly exposing the original function objects in all cases, e.g. allowing retrieval of the original value of `window.close`, or of the getter function for `window.status`, we only did that for the specific case of constructors, which need to create objects that will pass `instanceof` and similar checks.
-
-An [earlier version](https://github.com/domenic/get-originals/tree/dab86957e9f736d0884bf1f3370962ec5a383108#the-api) was more minimal, but when we tried to envision how it would be implemented, we realized it would be quite difficult. The current version attempts to do better.
-
-### Instance-based design rationale
-
-Some might find APIs that identify a property or method using a string more natural than what we have proposed. For example,
-
-```js
-const sliced = callOriginalMethod(
-  "Array.prototype.slice",
-  /* thisArg = */[1, 2, 3],
-  /* args... = */1, 5
-  );
-```
-
-This was indeed part of our [original proposal](https://github.com/drufball/layered-apis/issues/6); however, @bzbarsky pointed out that this introduces excessive fragility into the ecosystem.
-
-In particular, it prevents future refactoring in the platform where we move properties between prototypes. Imagine if we introduced some sort of `IndexedCollection` base class for `Array`, and moved `slice()` to `IndexedCollection`. Then, the above code, and any web sites that used it, would not work.
-
-Another issue is with regard to the existing lack of interoperability around various prototype chains on the platform. For example, currently [it is not very clear what belongs on `HTMLDocument` vs. `Document`](https://github.com/whatwg/dom/issues/221), and different browsers have different answers (all of which differ from the spec). The above API would force web developers to know which of `HTMLDocument.prototype` or `Document.prototype` a given property or method is on, which could vary per browser. Whereas with the proposed API, they would just use the `document` instance, and it would work either way.
-
-You can imagine various workarounds. For example, maintaining a separate "original prototype chain" which you can do lookups on, so that even in that hypothetical future, `"Array.prototype.slice"` can be treated the same way as `"IndexedCollection.prototype.slice"`. But this seems like a lot of work, for very little gain. Especially since the instance-based approach works so nicely, at least for Web IDL-backed objects.
-
-### Method calls with variadic arguments
-
-Both `callOriginalMethod()` and `callOriginalStaticMethod()` take the arguments to be passed variadically, after the identifying information for the method in question.
-
-The reason for preferring this over using an arguments array (as seen in e.g. JavaScript's `Reflect.call`) is that array literals are not safe from monkeypatching. Pretend for a moment we used arrays for `callOriginalMethod()`. Then we have this unfortunate scenario:
-
-```js
-// Author code:
-Object.defineProperty(Array.prototype, Symbol.iterator, {
-  get() {
-    throw new Error("boo!");
-  }
-});
-
-// Library code, trying to be robust:
-callOriginalMethod(originalSelf, "open", ["https://example.com/"]);
-```
-
-The call to `callOriginalMethod()` here will throw in the process of processing the `["https://example.com/"]` argument. The attempts to be robust have failed.
-
-Avoiding this problem involves bootstrapping your way to a "safe array" constructor, whose iterator is hand-coded to return the array elements appropriately. This is quite difficult, not in the least because until you have this in hand, you can't effectively use `callOriginalMethod()` or `callOriginalStaticMethod()`, so the boostrap process itself becomes harder. We think it might be technically doable, but it certainly won't be easy. Instead, we think using variadic arguments for `callOriginalMethod()` and `callOriginalStaticMethod()` is much simpler.
-
-### Same values
-
-One important question is whether the "originals" returned by these methods have the same _object identity_ as the originals, or just the same behavior.
-
-Because of our API design, this question only arises for one method: `getOriginalConstructor()`. In all other cases the "original" being used is not actually returned to script; it is simply invoked. This should allow easier implementation, by going directly to the backing algorithm, instead of having to save away the appropriate JavaScript function object.
-
-But for `getOriginalConstructor()`, it's important to give the exact original constructor, because of cases like this:
+This is especially important for constructors; consider a case like
 
 ```js
 // Library code:
-const o_Promise = getOriginalConstructor("Promise");
+import oPromise from "std:global/Promise";
 
 function delay(ms) {
   return new o_Promise(resolve => {
@@ -284,41 +208,150 @@ function delay(ms) {
 console.assert(delay(500) instanceof Promise);
 ```
 
-That is, if `getOriginalConstructor("Promise")` did not have the same identity as the existing global `Promise`, consumers would be able to easily observe the difference, in a way that would be undesireable. This example generalizes to any constructor.
 
-### Things that do not work
+### Exposure restrictions are preserved
 
-The above sections explain how each part of this API is geared toward accessing specific originals. Here we give a series of examples of things that, according to those rules, do _not_ work. This should hopefully make the boundaries of the API clearer:
+The exports and existence of these modules will vary per type of global, according to what is [exposed](https://heycam.github.io/webidl/#dfn-exposed) in that realm. So for example,
+
+- `"std:global/Event"` will exist in windows, workers, and audio worklet realms, but not in paint worklet realms
+- `"std:global/Node"` will only exist in window realms
+- `"std:global/Math"` will exist in all realms
+- The `setMatrixValue` export of `"std:global/DOMMatrix` will only exist in window realms' versions of `"std:global/DOMMatrix`
+
+Note that because the properties of [module namespace objects](https://tc39.github.io/ecma262/#sec-module-namespace-exotic-objects) are immutable, they provide a natural way to share access to the originals without allowing multiple consumers to interfere with each other.
+
+## API discussion
+
+### Motivation for using modules
+
+TODO WebAssembly, import maps
+
+### Name mangling
+
+To accomplish this proposal's goals, all functions (static methods, prototype methods, getters, and setters) needs to be provided as non-configurable, non-writable properties. The API above does this by making them all module exports, where each global has a flattened namespace which all four types of functions share. This sharing is made possibly by mangling the names of static methods, getters, and setters.
+
+In particular, the proposal assumes we will never have prototype methods whose names end in `_get`, `_set`, or `_static`. We think this asssumption is safe; such names are [prohibited by the W3C TAG design principles](https://w3ctag.github.io/design-principles/#casing-rules), and we don't anticipate any standards body introducing any methods that violate them. We could enforce this in Web IDL, for all specs that depend on that infrastructure.
+
+If folks think this kind of constraint on the future is bad, we could consider alternatives, such as:
+
+- different, more-esoteric suffixes, such as `$get` or `_____get` or `$_$_$get`, or
+- separate modules `"std:global/X/statics"`, `"std:global/X/methods"`, and `"std:global/X/accessors"`
+
+### Safe usage
+
+As emphasized a few times already, safe meta-programming is not easy. Here are two techniques that users of this proposal need to keep in mind especially:
+
+#### Use (the original) `Reflect.apply` extensively
+
+All methods, getters, and setters imported from the `"std:global/X"` modules will need to be supplied with a correct thisArg. It may be tempting to write code such as the following:
 
 ```js
-// Constructor properties of the global: use getOriginalConstructor() instead.
+import { hasOwnProperty } from "std:global/Object";
 
-getOriginalProperty(originalSelf, "TypeError");   // undefined
-getOriginalProperty(originalSelf, "Node")         // undefined
-
-
-// Methods: use callOriginalMethod() instead.
-
-getOriginalProperty(originalSelf, "close");       // undefined
-getOriginalProperty(originalSelf, "encodeURI");   // undefined
-getOriginalProperty(someNode, "isEqualNode");     // undefined
-
-
-// Static methods: use callOriginalStaticMethod() instead.
-
-getOriginalProperty(Array, "isArray");            // undefined
-callOriginalMethod(Number, "isNaN", 5);           // TypeError
-
-
-// Non-method statics: use the actual constant values instead
-
-getOriginalProperty(Number, "MAX_SAFE_INTEGER");  // undefined
-getOriginalProperty(Math, "PI");                  // undefined
-getOriginalProperty(Node, "COMMENT_NODE");        // undefined
-getOriginalProperty(originalSelf, "NaN");         // undefined
+// *** BAD: THIS WILL NOT WORK ***
+const result = hasOwnProperty(someObject, "someProp");
 ```
 
+which forgets to set the thisArg, or code such as this:
+
+```js
+import { hasOwnProperty } from "std:global/Object";
+
+// *** BAD: THIS IS UNSAFE ***
+const result = hasOwnProperty.call(someObject, "someProp");
+```
+
+which unsafely accesses the `.call` property of `hasOwnProperty`, which is not necessarily the original `Function.prototype.call` you'd be expecting.
+
+Instead, you want to use the original version of `Reflect.apply`:
+
+```js
+import { apply } from "std:global/Reflect";
+import { hasOwnProperty } from "std:global/Object";
+
+// *** CORRECT: THIS IS SAFE ***
+const result = apply(hasOwnProperty, someObject, ["someProp"]);
+```
+
+An alternate technique is to define an [uncurry thisArg](http://2ality.com/2011/11/uncurrying-this.html) function; doing so using get-originals APIs as the foundation is left as an exercise to the reader.
+
+#### Do not grab properties from exports of the originals modules
+
+A tempting footgun is to import the minimal number of originals, and then attempt to use their properties:
+
+```js
+import Array from "std:global/Array";
+
+// *** BAD: THIS IS UNSAFE ***
+const result = Array.isArray(someObject);
+```
+
+The get-originals API does nothing to prevent this; it can't, since the imported `Array` is [the same](#identity-is-preserved) as the normal global `Array`, which has an `isArray` static method. But of course, this code is suspectible to tampering. Instead, you need to do
+
+```js
+import { isArray_static } from "std:global/Array";
+
+// *** CORRECT: THIS IS SAFE ***
+const reuslt = isArray_static(someObject);
+```
+
+### Movement between prototypes
+
+In the normal course of writing code, developers are not usually aware of what prototypes their methods and accessors come from. For example, when they do `document.body.firstElementChild`, they don't need to know or care whether `firstElementChild` is defined on `Node` or `Element`. It is observable:
+
+```js
+console.assert(!("firstElementChild" in Node.prototype));
+console.assert("firstElementChild" in Element.prototype);
+```
+
+but normally it isn't observed. This has historically given the spec ecosystem some wiggle room in moving methods and accessors between prototypes. It has also led to some interoperability issues due to different placement, with [`HTMLDocument` vs. `Document`](https://github.com/whatwg/dom/issues/221) being the main example—but these interoperability issues have not been so bad to date, precisely because web developers so rarely observe the differences.
+
+In contrast, any users of the get-originals APIs need to know exactly where in the prototype chain their methods and accessors are located:
+
+```js
+import { firstElementChild_get } from "std:global/Node";    // throws!
+import { firstElementChild_get } from "std:global/Element"; // works
+```
+
+This reduces our flexibility in moving things between prototypes, and makes any interop issues immediately apparent to web developers.
+
+We believe this issue is surmountable, through a few mechanisms:
+
+- Rigorous tests should accompany any initial implementations of get-originals, which test the _per spec_ locations of all methods and accessors. If any implementation fails to conform to the spec's location for a method or accessor placement, they should refrain from shipping the relevant `"std:global/X"` module until we get either the spec or implementation situation straightened out.
+- If we do need to move methods in the future, we can leave the exports from the `"std:global/X"` module in place. For example, if we moved `firstElementChild` from `Element.prototype` to `Node.prototype`, we could still export `firstElementChild_get` from the `"std:global/Element"` module to mantain backward compatibility. This could be maintained via Web IDL annotations, e.g. `[OriginalAlsoExportedFrom=Node] readonly attribute Element? firstElementChild`.
+
+_Open question: we could also consider just exporting the entire prototype chain in each module, so that e.g. `"std:global/Element"`'s exports would be a superset of `"std:global/Node"`'s. We worry a bit about the bloat there, though._
+
+### Limitations
+
+Are there originals that programs may want to access, but which this proposal does not provide? Our answer so far is "theoretically yes, and in practice no." We list the cases here, and discuss what it would take to add them at a later time.
+
+- **Constants**. We could easily add constants, but have chosen not too, as they are easily replicated by user code just using the constant values directly. We are open to revisiting this.
+
+- **Static getters/setters**. We do not know of any of these in existence in either the web or TC39 specifications. Adding them would be a simple matter of deciding whether the suffix is `_static_get` or `_get_static`.
+
+- **Symbol-named methods**. Methods like `Date.prototype[Symbol.toPrimitive]()` or `NodeList.prototype[Symbol.iterator]()` are not included in this proposal. In most cases symbol-named properties provide esoteric functionality or functionality that can easily be achieved through other means (such as iteration). Adding these later would involve a name-mangling scheme for transating built-in symbol names to export names (e.g. `Symbol.toPrimitive` → `toPrimitive_symbol` or similar).
+
+- **Not-on-the-global classes and objects**. The deprecated [`[NoInterfaceObject]`](https://heycam.github.io/webidl/#NoInterfaceObject) Web IDL extended attribute allows the creation of classes that are not exposed on the global object. Similarly, the ECMAScript spec, as well as Web IDL's binding layer, specify a variety of classes and prototype objects which are not exposed anywhere: examples include the [`GeneratorFunction` class](https://tc39.github.io/ecma262/#sec-generatorfunction-constructor), [`%IteratorPrototype%`](https://tc39.github.io/ecma262/#sec-%iteratorprototype%-object), or [iterator prototype objects](https://heycam.github.io/webidl/#dfn-iterator-prototype-object).
+
+  In most cases, the reasons these have not been exposed is because they are not very useful directly, so the motivation for including them in get-originals is low. If we did want to expose them, the easiest way would be to give them global names and have them flow into get-originals as normal. ([Example](https://github.com/tc39/proposal-iterator-helpers#iterator-helpers).) If that is not an option, we could consider one-off "modulifications", e.g. introducing `"std:hidden/GeneratorFunction"`, and reusing the get-originals spec infrastructure to the extent possible.
+
+### Complexities of the global object
+
+Consider ES built-in globals vs. Window built-in globals vs... ensure we have a way of accessing each
+
+## Specification plans
+
+TODO:
+
+- Put in Web IDL
+- Convert Streams to Web IDL
+- One-off the JS spec, but maybe eventually it'll be in Web IDL as well
+- Spec will eagerly fill module map, implementations will presumably not.
+
 ## Automatic rewriting/enforcement of robustness
+
+TODO update to latest API, maybe clean up a bit. Remove Sample conversion.md probably.
 
 It looks like you would do something like:
 
@@ -331,6 +364,6 @@ It looks like you would do something like:
 
 Looking at the [non-robust async local storage implementation](https://github.com/domenic/async-local-storage/blob/312d0fa31e6864b41df82119a9468db18c54ac19/prototype/implementation.mjs), it seems like every `x.y` property access should be converted to use the originals... except maybe `.length` on arrays. The array manipulation in general needs a bit more care.
 
-## Future extension: let author code expose its own originals
+## Author code / built-in modules exposing their own originals
 
-TODO: Figure out how/whether this can work, especially with the instance-based design.
+Talk about how they can follow this same pattern
