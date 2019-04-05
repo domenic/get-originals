@@ -159,7 +159,9 @@ Roughly speaking, each such module would have a series of exports:
 - For namespaces:
   - The functions stored on the namespace would be exported under their original names.
 
-_Open question: should we include data properties, i.e. "constants"? For example, should you be able to get the original value of `Math.PI` or `Event.AT_TARGET`? We omit them for now._
+(See [below](#name-mangling) for more discussion on these suffixes.)
+
+_Open question: should we include data properties, i.e. "constants"? For example, should you be able to get the original value of `Math.PI` or `Event.AT_TARGET`? We omit them for now. Discuss in [#9](https://github.com/domenic/get-originals/issues/9)_
 
 So, for example:
 
@@ -224,7 +226,7 @@ Note that because the properties of [module namespace objects](https://tc39.gith
 
 ### Motivation for using modules
 
-TODO WebAssembly, import maps
+TODO WebAssembly, import maps, import maps allow virtualization (#12, #17, #18)
 
 ### Name mangling
 
@@ -326,13 +328,13 @@ _Open question: we could also consider just exporting the entire prototype chain
 
 Are there originals that programs may want to access, but which this proposal does not provide? Our answer so far is "theoretically yes, and in practice no." We list the cases here, and discuss what it would take to add them at a later time.
 
-- **Constants**. We could easily add constants, but have chosen not too, as they are easily replicated by user code just using the constant values directly. We are open to revisiting this.
+- **Constants** ([#9](https://github.com/domenic/get-originals/issues/9)). We could easily add constants, but have chosen not too, as they are easily replicated by user code just using the constant values directly. We are open to revisiting this.
 
 - **Static getters/setters**. We do not know of any of these in existence in either the web or TC39 specifications. Adding them would be a simple matter of deciding whether the suffix is `_static_get` or `_get_static`.
 
 - **Symbol-named methods**. Methods like `Date.prototype[Symbol.toPrimitive]()` or `NodeList.prototype[Symbol.iterator]()` are not included in this proposal. In most cases symbol-named properties provide esoteric functionality or functionality that can easily be achieved through other means (such as iteration). Adding these later would involve a name-mangling scheme for transating built-in symbol names to export names (e.g. `Symbol.toPrimitive` → `toPrimitive_symbol` or similar).
 
-- **Not-on-the-global classes and objects**. The deprecated [`[NoInterfaceObject]`](https://heycam.github.io/webidl/#NoInterfaceObject) Web IDL extended attribute allows the creation of classes that are not exposed on the global object. Similarly, the ECMAScript spec, as well as Web IDL's binding layer, specify a variety of classes and prototype objects which are not exposed anywhere: examples include the [`GeneratorFunction` class](https://tc39.github.io/ecma262/#sec-generatorfunction-constructor), [`%IteratorPrototype%`](https://tc39.github.io/ecma262/#sec-%iteratorprototype%-object), or [iterator prototype objects](https://heycam.github.io/webidl/#dfn-iterator-prototype-object).
+- **Not-on-the-global classes and objects** ([#15](https://github.com/domenic/get-originals/issues/15)). The deprecated [`[NoInterfaceObject]`](https://heycam.github.io/webidl/#NoInterfaceObject) Web IDL extended attribute allows the creation of classes that are not exposed on the global object. Similarly, the ECMAScript spec, as well as Web IDL's binding layer, specify a variety of classes and prototype objects which are not exposed anywhere: examples include the [`GeneratorFunction` class](https://tc39.github.io/ecma262/#sec-generatorfunction-constructor), [`%IteratorPrototype%`](https://tc39.github.io/ecma262/#sec-%iteratorprototype%-object), or [iterator prototype objects](https://heycam.github.io/webidl/#dfn-iterator-prototype-object).
 
   In most cases, the reasons these have not been exposed is because they are not very useful directly, so the motivation for including them in get-originals is low. If we did want to expose them, the easiest way would be to give them global names and have them flow into get-originals as normal. ([Example](https://github.com/tc39/proposal-iterator-helpers#iterator-helpers).) If that is not an option, we could consider one-off "modulifications", e.g. introducing `"std:hidden/GeneratorFunction"`, and reusing the get-originals spec infrastructure to the extent possible.
 
