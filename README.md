@@ -143,7 +143,7 @@ function storeIt(value) {
 }
 ```
 
-Obviously, as with all safe meta-programming, this code is not that pleasant to write by hand, and hard to get correct. We are exploring tools to automate this rewriting process.
+Obviously, as with all safe meta-programming, this code is not that pleasant to write by hand, and hard to get correct. We are [exploring tools](#automatic-rewritingenforcement-of-robustness) to automate this rewriting process.
 
 ## The API
 
@@ -167,14 +167,12 @@ So, for example:
 
 - `"std:global/Event"` (based on the [`Event` class](https://dom.spec.whatwg.org/#interface-event)) would expose:
   - Method exports `composedPath`, `stopPropagation`, `stopImmediatePropagation`, `preventDefault`,  `initEvent`.
-  - Getter/setter exports `type_get`, `target_get`, `srcElement_get`, `currentTarget_get`, `eventPhase_get`, `bubbles_get`, `cancelable_get`, `returnValue_get`, `returnValue_set`, `defaultPrevented_get`, `composed_get`, `timeStamp_get`
+  - Getter/setter exports `type_get`, `target_get`, `srcElement_get`, `currentTarget_get`, `eventPhase_get`, `bubbles_get`, `cancelable_get`, `returnValue_get`, `returnValue_set`, `defaultPrevented_get`, `composed_get`, `isTrusted_get`, `timeStamp_get`
 - `"std:global/Reflect"` (based on the [`Reflect` namespace](https://tc39.github.io/ecma262/#sec-reflect-object)) would expose:
   - Function exports `apply`, `construct`, `defineProperty`, `deleteProperty`, `get`, `getOwnPropertyDescriptor`, `getPrototypeOf`, `has`, `isExtensible`, `ownKeys`, `preventExtensions`, `set`, `setPrototypeOf`
 - `"std:global/Number"` (based on the [`Number` class](https://tc39.github.io/ecma262/#sec-number-objects)) would expose:
   - Method exports: `toExponential`, `toFixed`, `toLocaleString`, `toPrecision`, `toString`, `valueOf`
   - Static method exports: `isFinite_static`, `isInteger_static`, `isNaN_static`, `isSafeInteger_static`, `parseFloat_static`, `parseInt_static`
-
-_Open question: Should we include `[Unforgeable]` methods/getters/setters, such as `Event`'s `isTrusted` getter? They are not necessary for our use cases, since they are already original, but including them may simplify implementation or usage._
 
 ### Identity is preserved
 
@@ -334,38 +332,78 @@ Are there originals that programs may want to access, but which this proposal do
 
 - **Symbol-named methods**. Methods like `Date.prototype[Symbol.toPrimitive]()` or `NodeList.prototype[Symbol.iterator]()` are not included in this proposal. In most cases symbol-named properties provide esoteric functionality or functionality that can easily be achieved through other means (such as iteration). Adding these later would involve a name-mangling scheme for transating built-in symbol names to export names (e.g. `Symbol.toPrimitive` → `toPrimitive_symbol` or similar).
 
+- **Defined-in-JavaScript global functions**. The functions in the [Function Properties of the Global Object](https://tc39.github.io/ecma262/#sec-function-properties-of-the-global-object) section of the JavaScript specification are not accounted for in the API presented here. (Functions defined via web specifications, such as `window.alert()`, are retrievable via e.g. `"std:global/Window"`.) They are all of dubious utility or have better replacements: for example, the `URL` class replaces `encodeURIComponent()`, and `Number.parseInt()` replaces `parseInt()`. So, they are omitted for now. If we added them later, we could add them as named exports of `"std:global"`.
+
 - **Not-on-the-global classes and objects** ([#15](https://github.com/domenic/get-originals/issues/15)). The deprecated [`[NoInterfaceObject]`](https://heycam.github.io/webidl/#NoInterfaceObject) Web IDL extended attribute allows the creation of classes that are not exposed on the global object. Similarly, the ECMAScript spec, as well as Web IDL's binding layer, specify a variety of classes and prototype objects which are not exposed anywhere: examples include the [`GeneratorFunction` class](https://tc39.github.io/ecma262/#sec-generatorfunction-constructor), [`%IteratorPrototype%`](https://tc39.github.io/ecma262/#sec-%iteratorprototype%-object), or [iterator prototype objects](https://heycam.github.io/webidl/#dfn-iterator-prototype-object).
 
   In most cases, the reasons these have not been exposed is because they are not very useful directly, so the motivation for including them in get-originals is low. If we did want to expose them, the easiest way would be to give them global names and have them flow into get-originals as normal. ([Example](https://github.com/tc39/proposal-iterator-helpers#iterator-helpers).) If that is not an option, we could consider one-off "modulifications", e.g. introducing `"std:hidden/GeneratorFunction"`, and reusing the get-originals spec infrastructure to the extent possible.
 
-### Complexities of the global object
-
-Consider ES built-in globals vs. Window built-in globals vs... ensure we have a way of accessing each
-
 ## Specification plans
 
-TODO:
+We expect that a formal specification for this API, after its initial incubation, will be included as part of [Web IDL](https://heycam.github.io/webidl/).
 
-- Put in Web IDL
-- Convert Streams to Web IDL
-- One-off the JS spec, but maybe eventually it'll be in Web IDL as well
-- Spec will eagerly fill module map, implementations will presumably not.
+In particular, during the steps where Web IDL currently [defines the global property references](https://heycam.github.io/webidl/#define-the-global-property-references), we would insert steps which define new [synthetic module records](https://proposal-javascript-standard-library-domenic.now.sh/#sec-synthetic-module-records) to install into the realm's [module map](https://html.spec.whatwg.org/multipage/webappapis.html#concept-settings-object-module-map). This would take care of all Web IDL-defined globals.
+
+There are two main non-Web IDL-defined specifications that also contribute to the web platform's globals: the [Streams Standard](https://streams.spec.whatwg.org/) and, of course, the [JavaScript specification](https://tc39.github.io/ecma262/) itself.
+
+For Streams, [switching to Web IDL](https://github.com/whatwg/streams/issues/963) is already agreed upon, and we think it's best to block any exposure of Streams Standard originals on that work completing.
+
+For JavaScript, there are ambitions [to use an IDL](https://github.com/tc39/proposal-idl), probably Web IDL, to reframe all existing globals. This would be the optimal outcome. However, we'll probably need an interim solution while that work continues. Such a solution would be specified in a separate section of the Web IDL spec, and would probably operate by iterating over clause titles from the JavaScript specification: for example, the clauses on [Constructor Properties of the Global Object](https://tc39.github.io/ecma262/#sec-constructor-properties-of-the-global-object) and [Other Properties of the Global Object](https://tc39.github.io/ecma262/#sec-other-properties-of-the-global-object).
+
+Note that in the specifications, it will probably prove convenient to eagerly fill the module map with all of these modules, during realm creation. Implementations will likely choose a more lazy approach, but the observable consequences will be identical either way.
 
 ## Automatic rewriting/enforcement of robustness
 
-TODO update to latest API, maybe clean up a bit. Remove Sample conversion.md probably.
+Given how safe meta-programming is so difficult to do by hand, we think that most usage of the get-originals API will be via tooling. For WebAssembly, this will presumably be part of their usual compilation toolchain. For JavaScript, we anticipate working on tools such as:
 
-It looks like you would do something like:
+- A transpiler, which takes idiomatic code and converts all method and property access of built-in objects into get-originals usage. This could be greatly helped by a type system, so e.g. this may work well as a [TypeScript](https://www.typescriptlang.org/) plugin. (But, note that an unsound type system like TypeScript would prevent us from getting 100% correctness guarantees.)
 
-- Don't allow any direct access to globals: must use `getOriginalConstructor()` or `getOriginalProperty(originalSelf, ...)`. Easy to detect by checking for unknown bindings.
-- First pass: don't allow any `x.y`-based property access
-  - It's never safe on browser-provided objects
-  - Even for author-created objects you should probably be using their private state (that you control), not public API
-  - If you really need an escape hatch, we could allow `x["y"]`, or some kind of `// I know what I'm doing` comment
-- Can we track which objects are browser-created and automatically rewrite them to use this pattern?
+- A checker, which uses heuristics to scan source code for dangerous patterns, such as the use of the `.` operator for property access. This could be done as e.g. an [ESLint](https://eslint.org/) plugin.
 
-Looking at the [non-robust async local storage implementation](https://github.com/domenic/async-local-storage/blob/312d0fa31e6864b41df82119a9468db18c54ac19/prototype/implementation.mjs), it seems like every `x.y` property access should be converted to use the originals... except maybe `.length` on arrays. The array manipulation in general needs a bit more care.
+- A chaos monkey, which mutates as many built-ins as it can then attempts to run your tests in the mutated environment, to verify resilience.
 
-## Author code / built-in modules exposing their own originals
+## Exposing other originals
 
-Talk about how they can follow this same pattern
+### Built-in module originals
+
+The proposal here is so far focused entirely on the existing global standard library. What about exposing the originals for parts of the standard library which are placed in [built-in modules](https://github.com/tc39/proposal-javascript-standard-library/)?
+
+We think that this could be done as a fairly straightforward extension of this proposal's mechanisms, with slightly different entry points. For example, [`"std:kv-storage"`](https://github.com/WICG/kv-storage) could expose its originals via a dedicated `"std:kv-storage/originals/X"` namespace, leading to code such as
+
+```js
+import { apply } from "std:global/Reflect";
+import { storage } from "std:kv-storage";
+import { get as StorageArea_get } from "std:kv-storage/originals/StorageArea";
+
+const promise = apply(StorageArea_get, storage, ["someKey"]);
+```
+
+We'll focus on globals first, but especially as the work on [defining built-in modules via Web IDL](https://github.com/heycam/webidl/pull/675) continues, we anticipate extending get-originals to built-in modules to be a straightforward extension, should the need arise.
+
+### Author code originals
+
+Similarly, author code may wish to provide robust and WebAssembly-accessible entry points, in the same way that get-originals does for the web platform. This can be done via the same conventional pattern:
+
+TODO this doesn't work due to circular dependency ordering being imperfect. Do something a little more complicated.
+
+```js
+// my-library/index.mjs
+
+import "./originals/AwesomeStuff.mjs"; // (*)
+
+export class AwesomeStuff {
+  doAwesome() { }
+  static awesomeness() { }
+}
+```
+
+```js
+// my-library/originals/AwesomeStuff.mjs
+import { AwesomeStuff } from "../index.mjs";
+
+export default AwesomeStuff;
+export const doAwesome = AwesomeStuff.prototype.doAwesome;
+export const awesomeness_static = AwesomeStuff.awesomeness;
+```
+
+Here the line marked with a (*) is included so that any consumers of `my-library/index.mjs` will automatically trigger the... no wait this won't work.
