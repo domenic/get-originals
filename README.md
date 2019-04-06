@@ -123,7 +123,7 @@ import { isArray_static } from "std:global/Array";
 import TypeError as oTypeError from "std:global/TypeError";
 
 import { indexedDB_get } from "std:global/Window";
-import { open as IDBFactory_open } from "std:/global/IDBFactory";
+import { open as IDBFactory_open } from "std:global/IDBFactory";
 import { onsuccess_set as IDBRequest_onsuccess_set,
          result_get as IDBRequest_result_get } from "std:global/IDBRequest";
 
@@ -158,6 +158,7 @@ Roughly speaking, each such module would have a series of exports:
   - Any getters and setters on the associated class's prototype would be exposed with `_get` and `_set` suffixes.
 - For namespaces:
   - The functions stored on the namespace would be exported under their original names.
+  - If a namespace includes a class, that class is exposed based on its qualified name (TODO: also consider exposing it unqualified; either should work, as there are currently no collisions.)
 
 (See [below](#name-mangling) for more discussion on these suffixes.)
 
@@ -173,6 +174,8 @@ So, for example:
 - `"std:global/Number"` (based on the [`Number` class](https://tc39.github.io/ecma262/#sec-number-objects)) would expose:
   - Method exports: `toExponential`, `toFixed`, `toLocaleString`, `toPrecision`, `toString`, `valueOf`
   - Static method exports: `isFinite_static`, `isInteger_static`, `isNaN_static`, `isSafeInteger_static`, `parseFloat_static`, `parseInt_static`
+- `"std:global/WebAssembly.Memory"` (based on the [`WebAssembly.Memory` class](https://webassembly.github.io/spec/js-api/index.html#memories)) would expose:
+  - Method exports: `grow`, `buffer_get`
 
 ### Identity is preserved
 
@@ -195,10 +198,13 @@ This is especially important for constructors; consider a case like
 ```js
 // Library code:
 import oPromise from "std:global/Promise";
+import { setTimeout } from "std:global/Window";
+import { apply } from "std:global/Reflect";
+import global from "std:global";
 
 function delay(ms) {
   return new o_Promise(resolve => {
-    callOriginalMethod(originalSelf, "setTimeout", resolve, ms)
+    apply(setTimeout, global, [resolve, ms])
   });
 }
 ```
