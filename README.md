@@ -51,7 +51,7 @@ WebAssembly.instantiateStreaming(fetch("simple.wasm"), {
 
 The WebAssembly module system then can then import these provided function values.
 
-The get-originals proposal provides direct, first-class access to the built-in globals (normally inaccessible to WebAssembly) via the module system ([soon](https://littledan.github.io/esm-integration/) accessible to WebAssembly). This obviates the need to bridge all used functionality through JavaScript.
+The get-originals proposal provides direct, first-class access to the built-in globals (normally inaccessible to WebAssembly) via the module system ([soon](https://github.com/WebAssembly/esm-integration/blob/master/proposals/esm-integration/README.md) accessible to WebAssembly). This obviates the need to bridge all used functionality through JavaScript.
 
 TODO: explain connection with Web IDL bindings, anyref, etc. for standard library functionality that doesn't take just integer types. Perhaps change above example if it relies too heavily on those to be workable.
 
