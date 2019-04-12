@@ -158,7 +158,7 @@ Roughly speaking, each such module would have a series of exports:
   - Any getters and setters on the associated class's prototype would be exposed with `_get` and `_set` suffixes.
 - For namespaces:
   - The functions stored on the namespace would be exported under their original names.
-  - If a namespace includes a class, that class is exposed based on its qualified name (TODO: also consider exposing it unqualified; either should work, as there are currently no collisions.)
+  - If a namespace includes a class, that class is exposed based on its qualified name.
 
 (See [below](#name-mangling) for more discussion on these suffixes.)
 
@@ -175,7 +175,8 @@ So, for example:
   - Method exports: `toExponential`, `toFixed`, `toLocaleString`, `toPrecision`, `toString`, `valueOf`
   - Static method exports: `isFinite_static`, `isInteger_static`, `isNaN_static`, `isSafeInteger_static`, `parseFloat_static`, `parseInt_static`
 - `"std:global/WebAssembly.Memory"` (based on the [`WebAssembly.Memory` class](https://webassembly.github.io/spec/js-api/index.html#memories)) would expose:
-  - Method exports: `grow`, `buffer_get`
+  - Method export: `grow`
+  - Getter export: `buffer_get`
 
 ### Identity is preserved
 
@@ -198,13 +199,12 @@ This is especially important for constructors; consider a case like
 ```js
 // Library code:
 import oPromise from "std:global/Promise";
-import { setTimeout } from "std:global/Window";
-import { apply } from "std:global/Reflect";
+import { setTimeout as oSetTimeout } from "std:global/Window";
 import global from "std:global";
 
 function delay(ms) {
-  return new o_Promise(resolve => {
-    apply(setTimeout, global, [resolve, ms])
+  return new oPromise(resolve => {
+    oSetTimeout(resolve, ms);
   });
 }
 ```
