@@ -51,7 +51,7 @@ WebAssembly.instantiateStreaming(fetch("simple.wasm"), {
 
 The WebAssembly module system then can then import these provided function values.
 
-The get-originals proposal provides direct, first-class access to the built-in globals (normally inaccessible to WebAssembly) via the module system ([soon](https://littledan.github.io/esm-integration/) accessible to WebAssembly). This obviates the need to bridge all used functionality through JavaScript.
+The get-originals proposal provides direct, first-class access to the built-in globals (normally inaccessible to WebAssembly) via the module system ([soon](https://github.com/WebAssembly/esm-integration/blob/master/proposals/esm-integration/README.md) accessible to WebAssembly). This obviates the need to bridge all used functionality through JavaScript.
 
 TODO: explain connection with Web IDL bindings, anyref, etc. for standard library functionality that doesn't take just integer types. Perhaps change above example if it relies too heavily on those to be workable.
 
@@ -123,7 +123,7 @@ import { isArray_static } from "std:global/Array";
 import TypeError as oTypeError from "std:global/TypeError";
 
 import { indexedDB_get } from "std:global/Window";
-import { open as IDBFactory_open } from "std:/global/IDBFactory";
+import { open as IDBFactory_open } from "std:global/IDBFactory";
 import { onsuccess_set as IDBRequest_onsuccess_set,
          result_get as IDBRequest_result_get } from "std:global/IDBRequest";
 
@@ -158,6 +158,7 @@ Roughly speaking, each such module would have a series of exports:
   - Any getters and setters on the associated class's prototype would be exposed with `_get` and `_set` suffixes.
 - For namespaces:
   - The functions stored on the namespace would be exported under their original names.
+  - If a namespace includes a class, that class is exposed based on its qualified name.
 
 (See [below](#name-mangling) for more discussion on these suffixes.)
 
@@ -173,6 +174,9 @@ So, for example:
 - `"std:global/Number"` (based on the [`Number` class](https://tc39.github.io/ecma262/#sec-number-objects)) would expose:
   - Method exports: `toExponential`, `toFixed`, `toLocaleString`, `toPrecision`, `toString`, `valueOf`
   - Static method exports: `isFinite_static`, `isInteger_static`, `isNaN_static`, `isSafeInteger_static`, `parseFloat_static`, `parseInt_static`
+- `"std:global/WebAssembly.Memory"` (based on the [`WebAssembly.Memory` class](https://webassembly.github.io/spec/js-api/index.html#memories)) would expose:
+  - Method export: `grow`
+  - Getter export: `buffer_get`
 
 ### Identity is preserved
 
@@ -195,10 +199,12 @@ This is especially important for constructors; consider a case like
 ```js
 // Library code:
 import oPromise from "std:global/Promise";
+import { setTimeout as oSetTimeout } from "std:global/Window";
+import global from "std:global";
 
 function delay(ms) {
-  return new o_Promise(resolve => {
-    callOriginalMethod(originalSelf, "setTimeout", resolve, ms)
+  return new oPromise(resolve => {
+    oSetTimeout(resolve, ms);
   });
 }
 ```
