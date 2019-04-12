@@ -162,7 +162,7 @@ Roughly speaking, each such module would have a series of exports:
 
 (See [below](#name-mangling) for more discussion on these suffixes.)
 
-_Open question: should we include data properties, i.e. "constants"? For example, should you be able to get the original value of `Math.PI` or `Event.AT_TARGET`? We omit them for now. Discuss in [#9](https://github.com/domenic/get-originals/issues/9)_
+_Open question: should we include data properties, i.e. "constants"? For example, should you be able to get the original value of `Math.PI` or `Event.AT_TARGET`? We omit them for now. Discuss in [#9](https://github.com/domenic/get-originals/issues/9)._
 
 So, for example:
 
@@ -222,7 +222,7 @@ The exports and existence of these modules will vary per type of global, accordi
 - `"std:global/Event"` will exist in windows, workers, and audio worklet realms, but not in paint worklet realms
 - `"std:global/Node"` will only exist in window realms
 - `"std:global/Math"` will exist in all realms
-- The `setMatrixValue` export of `"std:global/DOMMatrix` will only exist in window realms' versions of `"std:global/DOMMatrix`
+- The `setMatrixValue` export of `"std:global/DOMMatrix"` will only exist in window realms' versions of `"std:global/DOMMatrix`
 
 Note that because the properties of [module namespace objects](https://tc39.github.io/ecma262/#sec-module-namespace-exotic-objects) are immutable, they provide a natural way to share access to the originals without allowing multiple consumers to interfere with each other.
 
@@ -324,7 +324,7 @@ This reduces our flexibility in moving things between prototypes, and makes any 
 We believe this issue is surmountable, through a few mechanisms:
 
 - Rigorous tests should accompany any initial implementations of get-originals, which test the _per spec_ locations of all methods and accessors. If any implementation fails to conform to the spec's location for a method or accessor placement, they should refrain from shipping the relevant `"std:global/X"` module until we get either the spec or implementation situation straightened out.
-- If we do need to move methods in the future, we can leave the exports from the `"std:global/X"` module in place. For example, if we moved `firstElementChild` from `Element.prototype` to `Node.prototype`, we could still export `firstElementChild_get` from the `"std:global/Element"` module to mantain backward compatibility. This could be maintained via Web IDL annotations, e.g. `[OriginalAlsoExportedFrom=Node] readonly attribute Element? firstElementChild`.
+- If we do need to move methods in the future, we can leave the exports from the `"std:global/X"` module in place. For example, if we moved `firstElementChild` from `Element.prototype` to `Node.prototype`, we could still export `firstElementChild_get` from the `"std:global/Element"` module to mantain backward compatibility. This could be maintained via Web IDL annotations, e.g. `[OriginalAlsoExportedFrom=Element] readonly attribute Element? firstElementChild`.
 
 _Open question: we could also consider just exporting the entire prototype chain in each module, so that e.g. `"std:global/Element"`'s exports would be a superset of `"std:global/Node"`'s. We worry a bit about the bloat there, though._
 
